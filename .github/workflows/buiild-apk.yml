@@ -1,0 +1,57 @@
+name: Build APK
+
+# Run by hand from the Actions tab (Run workflow). Builds the release APK, signs it with a keystore kept in the
+# Actions cache (generated on the first run) and uploads it as an artifact named "dynamicisland-apk".
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply optimizations (patch.zip in the repo root)
+        run: |
+          if [ -f patch.zip ]; then unzip -o patch.zip; fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Build
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Restore signing key
+        id: key
+        uses: actions/cache@v4
+        with:
+          path: signing.jks
+          key: di-signing-key-v1
+
+      - name: Create signing key (first run only)
+        if: steps.key.outputs.cache-hit != 'true'
+        run: |
+          keytool -genkeypair -keystore signing.jks -alias di -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android -dname "CN=DynamicIsland"
+
+      - name: Align and sign
+        run: |
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          "$BT/zipalign" -p -f 4 app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
+          "$BT/apksigner" sign --ks signing.jks --ks-pass pass:android --key-pass pass:android \
+            --out dynamicisland-optimized.apk aligned.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dynamicisland-apk
+          path: dynamicisland-optimized.apk
+          retention-days: 30
